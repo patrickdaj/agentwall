@@ -1,175 +1,182 @@
 # AgentWall
 
-**The sandbox handles containment ("the agent can't escape"). AgentWall handles
-understanding ("should it be doing this?") — including the host-boundary attacks the
-sandbox model itself leaves open — and rides on top of whichever sandbox you already
-use.**
+**The sandbox handles containment — "the agent can't escape." AgentWall handles
+understanding — "should it be doing this?"** It rides on top of whichever sandbox
+you already use and catches the host-boundary attacks the sandbox model itself
+leaves open.
 
-AgentWall is a local-first, host-side security daemon for AI coding agents. It watches
-agent activity through sensors, classifies it with a deterministic-first detection
-cascade, correlates events into provenance chains, and enforces a capability-gated YAML
-policy. It is not a sandbox and does not compete with one — see "Substrates vs.
-competitors" below.
+AgentWall is a local-first, host-side security daemon for AI coding agents. It
+watches agent activity through sensors, classifies it with a deterministic-first
+detection cascade, correlates events into provenance chains, and enforces a
+capability-gated YAML policy. It is **not** a sandbox and does not compete with
+one.
 
-Full design rationale: `docs/superpowers/specs/2026-08-13-agentwall-design.md`.
+> **Status: v0 foundation.** The load-bearing skeleton is built and benchmarked;
+> several sensors and the Tier-2 classifier are scoped for v1. See
+> **[docs/status/v0.md](docs/status/v0.md)** for exactly what ships, what's
+> deferred, and the honest caveats.
 
-## Status: v0 foundation
+## Why it exists
 
-This is the **v0 foundation** milestone, not a full v1 ship. v0 delivers the load-bearing
-skeleton — daemon, real sensor, deterministic detection, provenance, policy, one runtime
-adapter, CLI, and a benchmark harness — proven against a subset of the attack corpus.
-Several pieces named in the design spec are explicitly **not** in v0 (see below); they
-are scoped for v1.
+Existing agent-security tools watch from a single vantage point — the network,
+or one tool call — so they never see an attack that crosses the workspace/host
+boundary. The canonical case: a poisoned README tells the agent to read `.env`
+and POST it to a new domain. A network-only tool sees only the final HTTP
+request, stripped of the fact that it carries secrets sourced from an untrusted
+file. AgentWall sees the whole chain.
 
-### What v0 ships
+```mermaid
+flowchart TB
+    subgraph sandbox["Sandbox runtime (containment — Docker Sandboxes / clawk / Clawker)"]
+        agent["AI coding agent<br/>(Claude Code / Codex)"]
+    end
 
-- **Host-side daemon** — event bus + SQLite (WAL) event store, health reporting.
-- **WorkspaceSensor** (real, not mocked) — watches the workspace via file write/create
-  events for implicit-execution files (git hooks, `package.json` scripts, etc.); it does
-  not observe file reads (see the corpus caveat below).
-- **Detection cascade** — Tier 0 deterministic rules (path/entropy/size rules) and
-  Tier 1 Gitleaks (secrets) + Presidio (PII), wired through a cascade with a **Tier-2
-  seam** (`SecurityClassifier` protocol) currently satisfied by a `NullClassifier`. No
-  SLM is registered in v0 — Tier-2 classification is v1 work; the interface exists so it
-  drops in without changing callers. **Caveat:** Tier-1 secret/PII scanning (Gitleaks,
-  Presidio) and the Tier-0 entropy check are implemented and unit-tested, but no v0
-  sensor attaches payload bytes yet, so they do not run in the live pipeline —
-  `WorkspaceSensor` computes a `content_hash` but sets no `payload_ref`, so
-  `daemon._on_event` always receives `payload=None` and these scanners early-return
-  `[]`. Wiring a payload source is v1 work.
-- **Provenance chain correlator** — source-scoped, hash-linked taint chains
-  (untrusted-source → sensitive-access → egress), not session-wide taint.
-- **Capability-gated YAML policy engine** — `(event_class, data_class, ...)` →
-  `ALLOW / WARN / BLOCK / QUARANTINE`, checked against what the active runtime adapter
-  actually declares it can enforce.
-- **Docker Sandbox runtime adapter** — declares `observe` and `quarantine` capabilities.
-  It does **not** declare an inline-block capability in v0 — there is no inline egress
-  gating yet; that is v1 work gated behind the TLS spike outcome (design spec §7).
-- **CLI** (`agentwall`) — `status`, `replay`, `policy`, `run` (including a `--check`
-  health-check mode used in the quickstart below).
-- **Attack corpus, rows 1–3 and row 9** — the host-boundary/provenance-chain scenarios
-  that a network-only detector structurally cannot see, plus the benign control suite:
-  - Row 1: malicious README → agent reads `.env` → POST to a new domain (classic taint
-    chain; a network-only tool sees only the final hop).
-  - Row 2: injection → agent edits `.git/hooks/post-commit` → payload runs on the host
-    later (invisible to any network-vantage tool).
-  - Row 3: injection → `package.json` postinstall script added → runs on host
-    `npm install` (same: no network signal exists to see).
-  - Row 9: benign control suite — real-shaped coding-session activity must produce
-    **zero** WARN-or-worse (the false-positive budget the whole cascade is honest
-    about).
-  - **Caveat:** row 1's read and egress steps are injected synthetically into the event
-    bus to exercise the correlator and prove the chain logic — v0 has no EgressSensor
-    and `WorkspaceSensor` does not observe file reads, so row 1 is not yet observed via
-    live sensors; that awaits v1 (EgressSensor, read observation). Rows 2–3 are
-    reachable through the live v0 `WorkspaceSensor` (real file-write/file-create
-    events).
-- **Benchmark harness** — `bench/run_bench.py`, measuring event-path p50/p95/p99
-  latency and Tier-2 invocation rate against the daemon's own submit path.
+    subgraph aw["AgentWall daemon (understanding — host-side)"]
+        direction TB
+        sensors["Sensors<br/>WorkspaceSensor (v0)<br/>Egress · MCP · Lifecycle (v1)"]
+        bus["Event bus"]
+        store[("SQLite WAL<br/>event store")]
+        cascade["Detection cascade<br/>Tier 0 → Tier 1 → Tier 2 seam"]
+        prov["Provenance chain<br/>correlator"]
+        policy["Capability-gated<br/>YAML policy engine"]
+        adapter["Runtime adapter<br/>observe · quarantine"]
+    end
 
-### Explicitly deferred to v1 (not in v0, do not assume otherwise)
+    agent -->|"file / egress / lifecycle activity"| sensors
+    sensors --> bus
+    bus --> store
+    bus --> cascade
+    cascade --> prov
+    prov --> policy
+    cascade --> policy
+    policy -->|"ALLOW / WARN / BLOCK / QUARANTINE"| adapter
+    adapter -.->|"quarantine = sbx stop"| sandbox
+```
 
-- **EgressSensor, MCPSensor, LifecycleSensor** — only WorkspaceSensor is real in v0.
-  Corpus rows that need egress/MCP/lifecycle visibility (4–8) are not implemented.
-- **Tier-2 SLM classifier** — the `SecurityClassifier` seam exists and is exercised by
-  the cascade, but only the `NullClassifier` (always-abstain) is registered. No
-  encoder/SLM model is loaded or invoked in v0; Tier-2 invocation rate is therefore
-  always 0.
-- **Attack corpus rows 4–8** — shared skills-store poisoning, malicious MCP
-  registration, allowed-domain exfil, low-and-slow exfil, and policy-drift detection
-  are v1 scope (they depend on the sensors above).
-- **Inline egress blocking** — the Docker Sandbox adapter can observe and quarantine
-  (pause/kill the sandbox); it cannot yet block an individual outbound request inline.
-- **Golden-replay snapshotting** — `agentwall replay` exists and reconstructs chains,
-  but a CI-enforced snapshot corpus for BLOCK/QUARANTINE scenarios lands with the
-  fuller (v1) attack corpus.
+## How detection works
 
-## Substrates vs. competitors
+Events flow through a **deterministic-first cascade** — cheap, exact rules run
+first and most events resolve there; the expensive model tier is a seam that
+only fires when the cheap tiers abstain. In v0 the Tier-2 seam holds a
+`NullClassifier` (always abstain); a small language model drops in for v1
+without changing any caller.
 
-Sandbox runtimes (Docker Sandboxes, clawk, Clawker) are **substrates AgentWall rides
-on**, not competitors — they do containment, and their own documentation explicitly
-disclaims content inspection, DLP, prompt-injection detection, and provenance tracking.
-Tools like Pipelock, AEGIS, TokenWall, and Strathon are the actual detection
-competitors: they watch from a single vantage point (network, or a single tool call)
-and cannot see attacks that cross the workspace/host boundary the way AgentWall's
-WorkspaceSensor and chain correlator can (design spec §13).
+```mermaid
+flowchart LR
+    event["Event"] --> t0{"Tier 0<br/>path · entropy · size rules<br/>(µs)"}
+    t0 -->|"resolved"| verdict["Verdict"]
+    t0 -->|"abstain"| t1{"Tier 1<br/>Gitleaks · Presidio<br/>(ms)"}
+    t1 -->|"resolved"| verdict
+    t1 -->|"abstain"| t2{"Tier 2 seam<br/>NullClassifier (v0)<br/>SLM (v1)"}
+    t2 --> verdict
+    verdict --> policy["Policy engine"]
+```
+
+Detection alone isn't the differentiator — **correlation across layers is.** The
+provenance correlator links events by source-scoped, hash-linked taint, so an
+individually-benign sequence becomes a single high-severity chain:
+
+```mermaid
+flowchart LR
+    a["Untrusted source<br/>evil.example/README.md<br/><i>tainted</i>"] --> b["Sensitive access<br/>reads /w/.env<br/><i>ALLOW alone</i>"]
+    b --> c["Egress<br/>POST to first-seen.xyz<br/><i>WARN alone</i>"]
+    c --> d["Correlator links the chain"]
+    d --> e["QUARANTINE<br/><b>untrusted → sensitive → egress</b>"]
+
+    style e fill:#c0392b,color:#fff
+```
+
+## Not a sandbox — a layer on top of one
+
+Sandbox runtimes do containment; their own docs explicitly disclaim content
+inspection, DLP, prompt-injection detection, and provenance. AgentWall is that
+missing semantic layer, portable across all of them.
+
+```mermaid
+flowchart TB
+    subgraph understanding["Understanding layer"]
+        aw["<b>AgentWall</b><br/>content inspection · DLP · provenance ·<br/>cross-layer correlation · dynamic policy"]
+    end
+    subgraph containment["Containment layer (substrates AgentWall rides on)"]
+        subs["Docker Sandboxes · clawk · Clawker<br/>microVM · egress allowlist · credential injection"]
+    end
+    competitors["Single-vantage detectors<br/>Pipelock · AEGIS · TokenWall · Strathon<br/><i>network-only or single-tool-call</i>"]
+
+    aw --> subs
+    competitors -.->|"blind to host-boundary attacks"| aw
+
+    style aw fill:#2c3e50,color:#fff
+```
+
+## CLI walkthrough
+
+> Illustrative session. Output shapes are real (captured from the v0 daemon);
+> the row-1 attack is driven through the corpus/replay path, since v0 has no
+> live EgressSensor yet — see the [v0 status caveats](docs/status/v0.md).
+
+Inspect the active policy — capability-gated rules mapping event classes to
+actions:
+
+```console
+$ agentwall policy --policy src/agentwall/policy/default_policy.yaml
+block-secret-egress: BLOCK
+quarantine-exfil-chain: QUARANTINE
+warn-sensitive-access: WARN
+warn-pii-egress: WARN
+```
+
+Health-check the daemon against a workspace — note the runtime adapter only
+declares capabilities it can actually enforce:
+
+```console
+$ agentwall run --check --workspace . --session dev \
+    --db /tmp/aw.db --policy src/agentwall/policy/default_policy.yaml
+{'degraded': False, 'events': 0, 'tier2_rate': 0.0, 'capabilities': ['observe', 'quarantine']}
+```
+
+As events flow, each gets a verdict — and a correlated exfil chain escalates
+past the individual verdicts to QUARANTINE:
+
+```console
+verdict=ALLOW       chain=-
+verdict=WARN        chain=-
+verdict=QUARANTINE  chain=untrusted-source: evil.example/README.md -> sensitive-access: /w/.env -> egress: first-seen.xyz
+```
+
+Then summarize and reconstruct what happened in a session:
+
+```console
+$ agentwall status --db /tmp/aw.db
+events: 3
+dead_letters: 0
+
+$ agentwall replay --db /tmp/aw.db --session s1
+untrusted-source: evil.example/README.md -> sensitive-access: /w/.env -> egress: first-seen.xyz
+```
 
 ## Quickstart
 
 ```bash
-# Install dependencies
-uv sync
+uv sync                 # install dependencies
+uv run pytest           # run the test suite (54 tests)
 
-# Run the test suite
-uv run pytest
-
-# Run the daemon health check against this workspace
-uv run agentwall run \
-  --workspace . \
-  --session dev \
-  --db /tmp/aw.db \
-  --policy src/agentwall/policy/default_policy.yaml \
-  --check
+# daemon health check against this workspace (exits without a long-running watch)
+uv run agentwall run --check \
+  --workspace . --session dev \
+  --db /tmp/aw.db --policy src/agentwall/policy/default_policy.yaml
 ```
 
-The health check prints the daemon's health payload (degraded flag, event count,
-Tier-2 rate, and the active runtime adapter's declared capabilities) and exits without
-starting a long-running watch loop.
-
-## Benchmarks
-
-Measured, not claimed (design spec §6), via `uv run python -m bench.run_bench` (1,000
-synthetic no-op workspace events through the live daemon submit path):
-
-```json
-{
-  "events": 1000,
-  "p50_ms": 0.0813750084489584,
-  "p95_ms": 0.13953993620816618,
-  "p99_ms": 0.1739342208020389,
-  "tier2_rate": 0.0
-}
-```
-
-Host: Apple Silicon macOS (Apple M3 Pro, macOS 15.5), Python 3.12.11, via `uv run`.
-Well under the design spec's Tier 0/1 p95 < 10 ms target. `tier2_rate` is 0 because v0
-has no SLM registered on the Tier-2 seam (`NullClassifier` only) — every event resolves
-at Tier 0/1, so nothing is escalated. This will move once a real Tier-2 classifier
-lands in v1, and the <2% budget will start meaning something rather than being trivially
-satisfied.
-
-## Test suite
+Want to see the detection engine catch the attack corpus?
 
 ```bash
-uv run pytest -q
+uv run pytest tests/corpus/test_scenarios.py -v   # row-1 exfil chain, git-hook, package.json, benign control
 ```
 
-54 passed as of this writing. Gitleaks and Presidio integration tests run for real
-(not skipped) — both tools are installed as part of the Tier-1 scanner setup.
+## Documentation
 
-## Sandbox dev workflow
-
-Repeatable Docker Sandboxes (sbx) workflow for developing with a Claude agent
-sandboxed on this repo. All host state (egress allow rules, proxy settings,
-background mitmweb) is owned and undone by the script.
-
-| Command | Does |
+| Doc | What's in it |
 |---|---|
-| `make sandbox` | Launch/attach the Claude sandbox; ensures the dev egress allowlist and the Anthropic no-proxy bypass (login works on first run) |
-| `make sandbox-inspect` | Chain all sandbox egress (except Anthropic auth/API) through mitmproxy on :8888 with the CA trusted in-sandbox; web UI URL in `~/.cache/agentwall/mitmweb.log` |
-| `make sandbox-direct` | Back to direct egress (default state) |
-| `make sandbox-clean` | Remove sandbox, script-owned policy rules and settings overrides, stop mitmweb |
-
-> **Note:** switching between inspect and direct runs `sbx daemon restart` —
-> `proxy.sandbox` changes only take effect on a daemon restart, not a sandbox
-> restart (verified). The daemon restart briefly stops any other running
-> sandboxes on your machine and adds a few seconds to the toggle.
-
-`scripts/sandbox.sh verify` proves the current mode: it checks the TLS issuer
-seen inside the sandbox (`CN=mitmproxy` vs the real CA) and that an HTTPS POST
-egresses successfully. `ATTACH=0` skips the interactive attach for scripting.
-
-Findings behind this design (CONNECT chaining, CA-trust requirement, no_proxy
-bypass for OAuth) are documented in
-`docs/superpowers/specs/2026-08-13-sandbox-dev-workflow-design.md`; the TLS
-egress spike verdict is in `docs/spikes/tls-egress.md`.
+| [docs/status/v0.md](docs/status/v0.md) | v0 milestone status — what ships, what's deferred to v1, benchmarks, caveats |
+| [docs/superpowers/specs/2026-08-13-agentwall-design.md](docs/superpowers/specs/2026-08-13-agentwall-design.md) | Full design rationale and architecture |
+| [docs/spikes/tls-egress.md](docs/spikes/tls-egress.md) | TLS egress inspection spike — verdict that routes v1 egress DLP |
+| [docs/sandbox-dev-workflow.md](docs/sandbox-dev-workflow.md) | `make sandbox*` dev tooling for working in a real Docker Sandbox |
