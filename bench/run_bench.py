@@ -47,6 +47,24 @@ async def run_bench(n: int, tmp_path: Path) -> BenchResult:
                        p99_ms=_pct(lat, 99), tier2_rate=health["tier2_rate"])
 
 
+async def run_egress_bench(n: int, tmp_path: Path) -> BenchResult:
+    cfg = DaemonConfig(workspace=tmp_path, session_id="bench", db_path=tmp_path / "ev.db",
+                       policy_path=_POLICY, rules=_RULES)  # enable_egress stays False
+    d = Daemon(cfg, adapter=DockerSandboxAdapter(workspace=tmp_path))
+    ref = d._store.put_blob(b"benign body, no secrets here")
+    lat: list[float] = []
+    for i in range(n):
+        e = new_event(event_type="network_upload", session_id="bench", source="egress",
+                      ts=float(i), payload_ref=ref, attrs={"destination": "example.com"})
+        t0 = time.perf_counter()
+        await d.submit(e)
+        lat.append((time.perf_counter() - t0) * 1000.0)
+    await d.stop()
+    lat_sorted = sorted(lat)
+    return BenchResult(events=n, p50_ms=_pct(lat_sorted, 50), p95_ms=_pct(lat_sorted, 95),
+                       p99_ms=_pct(lat_sorted, 99), tier2_rate=0.0)
+
+
 def assert_targets(res: BenchResult) -> None:
     assert res.p95_ms < 10.0, f"p95 {res.p95_ms:.2f}ms exceeds 10ms target"
     assert res.tier2_rate < 0.02, f"tier2 rate {res.tier2_rate:.3f} exceeds 2% target"
