@@ -327,11 +327,14 @@ via Ollama (MLX optional on Apple Silicon). Gitleaks + Presidio as Tier-1 compon
 
 ## 12. Roadmap
 
-- **v0 (Weeks 1–2):** TLS spike; daemon + event bus + SQLite; WorkspaceSensor +
+Phases, ordered by dependency — not time-boxed. Each phase ends on a demonstrable
+state proven against the corpus.
+
+- **v0 (foundation):** TLS spike; daemon + event bus + SQLite; WorkspaceSensor +
   Tier 0/1; corpus rows 1–3 + 9 green; benchmark harness.
-- **v1 (Weeks 3–6):** Docker Sandbox adapter; Tier 2 (Llama-Guard-class encoder +
-  Ollama SLM); provenance chains; policy engine; egress per spike outcome; corpus
-  rows 1–9; `replay`. **Ship.**
+- **v1 (ship):** Docker Sandbox adapter; Tier 2 (Llama-Guard-class encoder + Ollama
+  SLM); provenance chains; policy engine; egress per spike outcome; corpus rows 1–9;
+  `replay`.
 - **v1.x:** in-path MCP shim; clawk/plain-Docker adapters; policy-drift enforcement.
 - **Later (deferred):** secrets broker, agent-to-agent trust, risk scoring, EDR
   auto-containment, eBPF/Tetragon, OPA/OTel backends, Rust data plane, custom SLM.
