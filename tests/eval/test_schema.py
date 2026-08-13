@@ -31,3 +31,14 @@ def test_untrusted_source_is_optional_on_file_actions():
 def test_benign_flag_defaults_false():
     assert _scn().benign is False
     assert _scn(benign=True, expected=ExpectedOutcome(min_verdict="ALLOW", expect_chain=False)).benign is True
+
+
+def test_action_discriminator_parses_by_action_tag():
+    from agentwall.eval.schema import Scenario, FileRead
+    data = {"id": "z", "title": "t", "family": "f",
+            "provenance": {"source": "s", "kind": "research", "date": "2025-01-01"},
+            "actions": [{"action": "file_read", "path": "/w/x", "content": b"y"}],
+            "expected": {"min_verdict": "WARN", "expect_chain": False},
+            "status": "caught"}
+    s = Scenario.model_validate(data)
+    assert isinstance(s.actions[0], FileRead)

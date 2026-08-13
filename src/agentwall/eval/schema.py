@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Union
+from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
 
@@ -33,7 +33,7 @@ class Egress(BaseModel):
     body: bytes = b""
 
 
-Action = Union[FileWrite, FileRead, Egress]
+Action = Annotated[Union[FileWrite, FileRead, Egress], Field(discriminator="action")]
 
 
 class ExpectedOutcome(BaseModel):
