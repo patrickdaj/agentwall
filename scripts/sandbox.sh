@@ -115,6 +115,30 @@ cmd_direct() {
   attach
 }
 
+cmd_verify() {
+  sandbox_running || die "sandbox $SANDBOX_NAME is not running (run: scripts/sandbox.sh up)"
+  local mode issuer code
+  if [ -n "$(get_setting proxy.sandbox)" ]; then mode=inspect; else mode=direct; fi
+  issuer="$(run_in_sandbox \
+    'curl -sv --max-time 15 https://httpbin.org/ -o /dev/null 2>&1 | grep -i "issuer:"' || true)"
+  code="$(run_in_sandbox \
+    'curl -sS --max-time 15 -X POST https://httpbin.org/post -d probe=agentwall -o /dev/null -w "%{http_code}"' || true)"
+  info "mode=$mode ${issuer:-issuer=<none>} http=$code"
+  if [ "$mode" = "inspect" ]; then
+    if ! printf '%s' "$issuer" | grep -q mitmproxy; then
+      die "inspect mode but issuer is not mitmproxy — is mitmweb running and the CA injected? (hint: sbx policy log $SANDBOX_NAME)"
+    fi
+  else
+    if printf '%s' "$issuer" | grep -q mitmproxy; then
+      die "direct mode but issuer is mitmproxy — stale proxy chain? (run: scripts/sandbox.sh direct)"
+    fi
+  fi
+  if [ "$code" != "200" ]; then
+    die "in-sandbox HTTPS POST to httpbin.org failed (HTTP ${code:-none}) — hint: sbx policy log $SANDBOX_NAME"
+  fi
+  info "verify OK ($mode mode)"
+}
+
 usage() {
   cat <<EOF
 Usage: scripts/sandbox.sh <subcommand>
@@ -135,6 +159,7 @@ main() {
   case "${1:-help}" in
     up) cmd_up ;;
     direct) cmd_direct ;;
+    verify) cmd_verify ;;
     help|-h|--help) usage ;;
     *) usage; die "unknown subcommand: ${1:-}" ;;
   esac
