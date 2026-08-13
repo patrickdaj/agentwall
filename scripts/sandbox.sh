@@ -151,6 +151,61 @@ cmd_verify() {
   info "verify OK ($mode mode)"
 }
 
+mitm_running() { lsof -nP -iTCP:"$PROXY_PORT" -sTCP:LISTEN >/dev/null 2>&1; }
+
+start_mitmweb() {
+  if mitm_running; then
+    info "proxy already listening on :$PROXY_PORT"
+    return 0
+  fi
+  require uvx "install uv (https://docs.astral.sh/uv/)"
+  mkdir -p "$MITM_DIR"
+  info "starting mitmweb on :$PROXY_PORT (web UI URL + token: $MITM_LOG)"
+  nohup uvx mitmweb -p "$PROXY_PORT" \
+    --set web_open_browser=false \
+    --set stream_large_bodies=1m >"$MITM_LOG" 2>&1 &
+  echo $! >"$MITM_PID"
+  local i
+  for i in $(seq 1 30); do mitm_running && break; sleep 0.5; done
+  mitm_running || die "mitmweb did not start listening on :$PROXY_PORT — see $MITM_LOG"
+  for i in $(seq 1 30); do [ -f "$CA_CERT" ] && break; sleep 0.5; done
+  [ -f "$CA_CERT" ] || die "mitmproxy CA never appeared at $CA_CERT — see $MITM_LOG"
+}
+
+# Trust the mitmproxy CA inside the sandbox: system store (curl/git/python)
+# plus /etc/profile.d exports for Node and requests. Limitation (accepted in
+# the spec): profile.d only reaches login-shell descendants.
+inject_ca() {
+  info "injecting mitmproxy CA into sandbox trust store"
+  sbx cp "$CA_CERT" "$SANDBOX_NAME:/tmp/mitmproxy-ca.pem"
+  # shellcheck disable=SC2016  # single-quoted: expands inside the sandbox, not here
+  run_in_sandbox '
+    as_root() { if [ "$(id -u)" = "0" ]; then "$@"; else sudo -n "$@"; fi; }
+    as_root cp /tmp/mitmproxy-ca.pem /usr/local/share/ca-certificates/mitmproxy-ca.crt &&
+    as_root update-ca-certificates >/dev/null &&
+    printf "export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt\nexport REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt\n" \
+      | as_root tee /etc/profile.d/mitm-ca.sh >/dev/null
+  ' || die "CA injection failed — can the sandbox user reach root (sudo -n)?"
+}
+
+cmd_inspect() {
+  ensure_policy
+  ensure_no_proxy
+  start_mitmweb
+  ensure_sandbox
+  if [ "$(get_setting proxy.sandbox)" != "$PROXY_URL" ]; then
+    info "chaining sandbox egress through $PROXY_URL"
+    sbx settings set proxy.sandbox "$PROXY_URL" >/dev/null
+    apply_proxy_change            # daemon restart — required for the change to engage
+  else
+    info "proxy.sandbox already $PROXY_URL"
+    start_sandbox
+  fi
+  inject_ca
+  cmd_verify
+  attach
+}
+
 usage() {
   cat <<EOF
 Usage: scripts/sandbox.sh <subcommand>
@@ -170,6 +225,7 @@ main() {
   require python3 "needed to parse sbx settings JSON"
   case "${1:-help}" in
     up) cmd_up ;;
+    inspect) cmd_inspect ;;
     direct) cmd_direct ;;
     verify) cmd_verify ;;
     help|-h|--help) usage ;;
