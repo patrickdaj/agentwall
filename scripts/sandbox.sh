@@ -70,6 +70,32 @@ attach() {
 
 run_in_sandbox() { sbx exec "$SANDBOX_NAME" -- sh -c "$1"; }
 
+ensure_policy() {
+  local d
+  for d in "${ALLOW_DOMAINS[@]}"; do
+    if sbx policy check network "$d" 2>/dev/null | grep -q '^Allowed'; then
+      continue
+    fi
+    info "allowing egress: $d"
+    sbx policy allow network "$d" >/dev/null
+  done
+}
+
+ensure_no_proxy() {
+  if [ "$(get_setting no_proxy.sandbox)" != "$NO_PROXY_SANDBOX" ]; then
+    info "setting no_proxy.sandbox (Anthropic auth/API bypasses any upstream proxy)"
+    sbx settings set no_proxy.sandbox "$NO_PROXY_SANDBOX" >/dev/null
+  fi
+}
+
+cmd_up() {
+  ensure_policy
+  ensure_no_proxy
+  ensure_sandbox
+  start_sandbox
+  attach
+}
+
 usage() {
   cat <<EOF
 Usage: scripts/sandbox.sh <subcommand>
@@ -88,6 +114,7 @@ main() {
   require sbx "install Docker Sandboxes (https://docs.docker.com/ai/sandboxes/)"
   require python3 "needed to parse sbx settings JSON"
   case "${1:-help}" in
+    up) cmd_up ;;
     help|-h|--help) usage ;;
     *) usage; die "unknown subcommand: ${1:-}" ;;
   esac
