@@ -1,0 +1,13 @@
+rules:
+  - name: block-secret-egress
+    match: { classification_prefix: "secret:", source: "egress" }
+    action: BLOCK
+  - name: quarantine-exfil-chain
+    match: { in_chain: true }
+    action: QUARANTINE
+  - name: warn-sensitive-access
+    match: { classification_prefix: "sensitive_path_access" }
+    action: WARN
+  - name: warn-pii-egress
+    match: { classification_prefix: "pii:", source: "egress" }
+    action: WARN
