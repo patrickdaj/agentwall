@@ -70,3 +70,20 @@ async def test_malformed_frame_is_dead_lettered_and_loop_survives(tmp_path):
     assert len(dead) == 1
     assert len(bus.events) == 1  # the valid GET (no body → no blob)
     assert bus.events[0].payload_ref is None
+
+
+def test_start_proxy_raises_when_port_already_bound(tmp_path):
+    import socket
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    try:
+        s = EgressSensor(socket_path=str(tmp_path / "e.sock"), blob_put=lambda b: "blob:1",
+                         session_id="s", dead_letter=lambda raw, err: None,
+                         proxy_port=port, spawn_proxy=True)
+        with pytest.raises(RuntimeError):
+            s._start_proxy()
+        assert s.degraded is True
+    finally:
+        srv.close()

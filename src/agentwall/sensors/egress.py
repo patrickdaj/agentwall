@@ -6,7 +6,6 @@ import json
 import os
 import struct
 import subprocess
-import sys
 from pathlib import Path
 from typing import Callable
 
@@ -60,12 +59,17 @@ class EgressSensor:
     async def run(self, bus) -> None:
         if self._spawn:
             self._start_proxy()
-        os.makedirs(os.path.dirname(self._sock), exist_ok=True)
-        if os.path.exists(self._sock):
-            os.unlink(self._sock)
-        self._server = await asyncio.start_unix_server(self._make_handler(bus), path=self._sock)
-        async with self._server:
-            await self._stop_event.wait()  # stop() sets this; exiting the context closes the server
+        try:
+            os.makedirs(os.path.dirname(self._sock), exist_ok=True)
+            if os.path.exists(self._sock):
+                os.unlink(self._sock)
+            self._server = await asyncio.start_unix_server(self._make_handler(bus), path=self._sock)
+            async with self._server:
+                await self._stop_event.wait()  # stop() sets this; exiting the context closes the server
+        except Exception:  # socket setup failed after spawning the proxy — don't orphan it
+            if self._proc is not None and self._proc.poll() is None:
+                self._proc.terminate()
+            raise
 
     def _make_handler(self, bus):
         async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -86,6 +90,11 @@ class EgressSensor:
         self._stop_event.set()  # unblocks run()'s wait; the async-with then closes the server
         if self._proc is not None and self._proc.poll() is None:
             self._proc.terminate()
+            try:
+                self._proc.wait(timeout=5)  # reap so a restarting daemon leaves no zombies
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                self._proc.wait()
         if os.path.exists(self._sock):
             try:
                 os.unlink(self._sock)
