@@ -1,6 +1,7 @@
 import asyncio
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -38,8 +39,12 @@ async def test_row1_live_egress_quarantines(tmp_path):
     d = Daemon(cfg, adapter=DockerSandboxAdapter(workspace=tmp_path))
     # taint the session with an untrusted-source event (stands in for the poisoned-README write)
     from agentwall.events import new_event
+    # This submit must precede d.start() so the correlator sees the taint before the egress.
+    # ts must be near real wall-clock time: the live egress event carries mitmproxy's real
+    # epoch timestamp, and ChainCorrelator only links events within its 120s window — a
+    # placeholder like ts=1.0 would fall outside the window and the chain would never form.
     await d.submit(new_event(event_type="file_write", session_id="claude-agentwall",
-                             source="workspace", ts=1.0, trust="tainted",
+                             source="workspace", ts=time.time(), trust="tainted",
                              attrs={"untrusted_source": "evil.example/README.md"}))
     await d.start()
     try:
