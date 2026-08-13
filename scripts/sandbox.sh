@@ -206,6 +206,34 @@ cmd_inspect() {
   attach
 }
 
+cmd_clean() {
+  if sandbox_exists; then
+    info "removing sandbox $SANDBOX_NAME"
+    sbx rm --force "$SANDBOX_NAME" >/dev/null
+  fi
+  local d
+  for d in "${ALLOW_DOMAINS[@]}"; do
+    if sbx policy check network "$d" 2>/dev/null | grep -q '^Allowed'; then
+      info "removing egress allow: $d"
+      sbx policy rm network --resource "$d" >/dev/null 2>&1 || true
+    fi
+  done
+  if [ -n "$(get_setting proxy.sandbox)" ]; then
+    info "unsetting proxy.sandbox"
+    sbx settings unset proxy.sandbox >/dev/null
+  fi
+  if [ -n "$(get_setting no_proxy.sandbox)" ]; then
+    info "unsetting no_proxy.sandbox"
+    sbx settings unset no_proxy.sandbox >/dev/null
+  fi
+  if [ -f "$MITM_PID" ] && kill -0 "$(cat "$MITM_PID")" 2>/dev/null; then
+    info "stopping mitmweb (pid $(cat "$MITM_PID"))"
+    kill "$(cat "$MITM_PID")"
+  fi
+  rm -f "$MITM_PID"
+  info "clean done — sbx policy ls / sbx settings ls to confirm"
+}
+
 usage() {
   cat <<EOF
 Usage: scripts/sandbox.sh <subcommand>
@@ -228,6 +256,7 @@ main() {
     inspect) cmd_inspect ;;
     direct) cmd_direct ;;
     verify) cmd_verify ;;
+    clean) cmd_clean ;;
     help|-h|--help) usage ;;
     *) usage; die "unknown subcommand: ${1:-}" ;;
   esac
