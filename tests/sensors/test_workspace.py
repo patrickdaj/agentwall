@@ -21,6 +21,17 @@ def test_make_event_taints_skills_store(tmp_path):
     assert e.trust == "tainted" and e.source == "workspace"
 
 
+def test_sibling_prefix_dir_not_tainted(tmp_path):
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    sibling = tmp_path / "skills-evil"
+    sibling.mkdir()
+    sensor = WorkspaceSensor(workspace=tmp_path, session_id="s", skills_store=skills)
+    e = sensor.make_event("file_write", str(sibling / "x.sh"))
+    assert e.trust == "trusted"
+    assert e.attrs.get("skills_store") in (False, None)
+
+
 def test_make_event_normal_file_trusted(tmp_path):
     sensor = WorkspaceSensor(workspace=tmp_path, session_id="s")
     f = tmp_path / "README.md"
