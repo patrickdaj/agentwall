@@ -36,3 +36,15 @@ def test_persists_across_reopen(tmp_path):
     s2 = EventStore(p)
     assert [x.event_id for x in s2.all_events()] == [e.event_id]
     s2.close()
+
+
+def test_put_blob_from_another_thread(tmp_path):
+    import threading
+    store = EventStore(tmp_path / "ev.db")
+    result = {}
+    def worker():
+        result["ref"] = store.put_blob(b"from-thread")
+    t = threading.Thread(target=worker)
+    t.start(); t.join()
+    assert store.get_blob(result["ref"]) == b"from-thread"
+    store.close()

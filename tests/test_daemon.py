@@ -75,3 +75,33 @@ async def test_health_reports_egress_degraded_field(tmp_path):
     d = Daemon(cfg, adapter=DockerSandboxAdapter(workspace=tmp_path))
     assert "egress_degraded" in d.health()
     await d.stop()
+
+
+@pytest.mark.asyncio
+async def test_stop_survives_failed_egress_task_and_closes_store(tmp_path):
+    import asyncio
+    import socket
+
+    # Bind the proxy port ourselves so EgressSensor._start_proxy() finds it in use,
+    # sets `degraded = True`, and raises — making self._egress_task fail immediately.
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    port = blocker.getsockname()[1]
+    try:
+        cfg = DaemonConfig(workspace=tmp_path, session_id="s", db_path=tmp_path / "ev.db",
+                           policy_path=_POLICY, rules=_RULES, enable_egress=True,
+                           egress_socket=tmp_path / "egress.sock", proxy_port=port)
+        d = Daemon(cfg, adapter=DockerSandboxAdapter(workspace=tmp_path))
+        await d.start()
+        await asyncio.sleep(0.2)  # let the egress task hit the bound port and fail
+        assert d._egress.degraded is True
+
+        await d.stop()  # must not raise, and must close the store
+
+        assert d.health()["egress_degraded"] is True
+        import sqlite3
+        with pytest.raises(sqlite3.ProgrammingError):
+            d._store.append(new_event(event_type="x", session_id="s", source="workspace", ts=1.0))
+    finally:
+        blocker.close()

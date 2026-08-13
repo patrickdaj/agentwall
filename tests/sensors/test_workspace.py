@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from agentwall.bus import EventBus
 from agentwall.sensors.workspace import WorkspaceSensor, classify_path
 from agentwall.storage import EventStore
@@ -88,3 +90,26 @@ def test_no_blob_put_means_no_payload_ref(tmp_path):
 
 async def _collect(sink, e):
     sink.append(e)
+
+
+@pytest.mark.asyncio
+async def test_sensitive_write_stores_payload_via_real_observer(tmp_path):
+    from agentwall.storage import EventStore
+    from agentwall.bus import EventBus
+    store = EventStore(tmp_path / "ev.db")
+    bus = EventBus(store)
+    events = []
+    async def collect(ev):
+        events.append(ev)
+    bus.subscribe(collect)
+    sensor = WorkspaceSensor(workspace=tmp_path, session_id="s", blob_put=store.put_blob)
+    task = asyncio.create_task(sensor.run(bus))
+    await asyncio.sleep(0.3)  # let the observer start
+    (tmp_path / ".env").write_text("SECRET=abc")
+    await asyncio.sleep(0.6)  # let the watchdog fire and the coroutine run
+    sensor.stop()
+    await task
+    store.close()
+    env_events = [e for e in events if e.attrs.get("path", "").endswith(".env")]
+    assert env_events, "no .env write event observed"
+    assert any(e.payload_ref is not None for e in env_events), "payload not stored from watchdog thread"

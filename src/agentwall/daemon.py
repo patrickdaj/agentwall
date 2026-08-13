@@ -86,13 +86,18 @@ class Daemon:
 
     async def stop(self) -> None:
         self._sensor.stop()
-        if self._sensor_task:
-            await self._sensor_task
         if self._egress is not None:
             self._egress.stop()
-        if self._egress_task:
-            await self._egress_task
-        self._store.close()
+        try:
+            tasks = [t for t in (self._sensor_task, self._egress_task) if t is not None]
+            if tasks:
+                # return_exceptions=True: a failed sensor/egress task must be retrieved
+                # here, not re-raised — otherwise a bad egress bind (e.g. port already in
+                # use) would skip store.close() below and leak the sqlite handle, plus
+                # asyncio would log "Task exception was never retrieved".
+                await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._store.close()
 
     def health(self) -> dict:
         return {
