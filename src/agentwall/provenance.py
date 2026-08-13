@@ -30,7 +30,7 @@ class ChainCorrelator:
         self._w = window_s
         self._states: dict[str, _State] = {}
 
-    def observe(self, event: SecurityEvent) -> Chain | None:
+    def observe(self, event: SecurityEvent, has_secret: bool = False) -> Chain | None:
         st = self._states.setdefault(event.session_id, _State())
 
         if is_untrusted(event):
@@ -52,9 +52,16 @@ class ChainCorrelator:
                 st.ids.append(event.event_id)
                 return None
 
-        if event.source == "egress" and st.tainted_at is not None and st.sensitive_seen:
+        if event.source == "egress" and st.tainted_at is not None:
             if event.ts - st.tainted_at <= self._w:
-                st.steps.append(f"egress: {event.attrs.get('destination', '?')}")
+                dest = event.attrs.get("destination", "?")
+                if has_secret:
+                    step = f"secret-egress: {dest}"
+                elif st.sensitive_seen:
+                    step = f"egress: {dest}"
+                else:
+                    return None
+                st.steps.append(step)
                 st.ids.append(event.event_id)
                 chain = Chain(session_id=event.session_id, steps=list(st.steps), event_ids=list(st.ids))
                 self._states[event.session_id] = _State()
