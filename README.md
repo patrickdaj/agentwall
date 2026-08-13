@@ -24,13 +24,19 @@ are scoped for v1.
 ### What v0 ships
 
 - **Host-side daemon** — event bus + SQLite (WAL) event store, health reporting.
-- **WorkspaceSensor** (real, not mocked) — watches the workspace for implicit-execution
-  files (git hooks, `package.json` scripts, etc.) and sensitive-path access.
+- **WorkspaceSensor** (real, not mocked) — watches the workspace via file write/create
+  events for implicit-execution files (git hooks, `package.json` scripts, etc.); it does
+  not observe file reads (see the corpus caveat below).
 - **Detection cascade** — Tier 0 deterministic rules (path/entropy/size rules) and
   Tier 1 Gitleaks (secrets) + Presidio (PII), wired through a cascade with a **Tier-2
   seam** (`SecurityClassifier` protocol) currently satisfied by a `NullClassifier`. No
   SLM is registered in v0 — Tier-2 classification is v1 work; the interface exists so it
-  drops in without changing callers.
+  drops in without changing callers. **Caveat:** Tier-1 secret/PII scanning (Gitleaks,
+  Presidio) and the Tier-0 entropy check are implemented and unit-tested, but no v0
+  sensor attaches payload bytes yet, so they do not run in the live pipeline —
+  `WorkspaceSensor` computes a `content_hash` but sets no `payload_ref`, so
+  `daemon._on_event` always receives `payload=None` and these scanners early-return
+  `[]`. Wiring a payload source is v1 work.
 - **Provenance chain correlator** — source-scoped, hash-linked taint chains
   (untrusted-source → sensitive-access → egress), not session-wide taint.
 - **Capability-gated YAML policy engine** — `(event_class, data_class, ...)` →
@@ -52,6 +58,12 @@ are scoped for v1.
   - Row 9: benign control suite — real-shaped coding-session activity must produce
     **zero** WARN-or-worse (the false-positive budget the whole cascade is honest
     about).
+  - **Caveat:** row 1's read and egress steps are injected synthetically into the event
+    bus to exercise the correlator and prove the chain logic — v0 has no EgressSensor
+    and `WorkspaceSensor` does not observe file reads, so row 1 is not yet observed via
+    live sensors; that awaits v1 (EgressSensor, read observation). Rows 2–3 are
+    reachable through the live v0 `WorkspaceSensor` (real file-write/file-create
+    events).
 - **Benchmark harness** — `bench/run_bench.py`, measuring event-path p50/p95/p99
   latency and Tier-2 invocation rate against the daemon's own submit path.
 
