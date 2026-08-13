@@ -158,17 +158,18 @@ background mitmweb) is owned and undone by the script.
 | `make sandbox` | Launch/attach the Claude sandbox; ensures the dev egress allowlist and the Anthropic no-proxy bypass (login works on first run) |
 | `make sandbox-inspect` | Chain all sandbox egress (except Anthropic auth/API) through mitmproxy on :8888 with the CA trusted in-sandbox; web UI URL in `~/.cache/agentwall/mitmweb.log` |
 | `make sandbox-direct` | Back to direct egress (default state) |
+| `make sandbox-clean` | Remove sandbox, script-owned policy rules and settings overrides, stop mitmweb |
 
 > **Note:** switching between inspect and direct runs `sbx daemon restart` —
 > `proxy.sandbox` changes only take effect on a daemon restart, not a sandbox
 > restart (verified). The daemon restart briefly stops any other running
 > sandboxes on your machine and adds a few seconds to the toggle.
-| `make sandbox-clean` | Remove sandbox, script-owned policy rules and settings overrides, stop mitmweb |
 
 `scripts/sandbox.sh verify` proves the current mode: it checks the TLS issuer
 seen inside the sandbox (`CN=mitmproxy` vs the real CA) and that an HTTPS POST
 egresses successfully. `ATTACH=0` skips the interactive attach for scripting.
 
 Findings behind this design (CONNECT chaining, CA-trust requirement, no_proxy
-bypass for OAuth) are in `docs/spikes/tls-egress.md` and
-`docs/superpowers/specs/2026-08-13-sandbox-dev-workflow-design.md`.
+bypass for OAuth) are documented in
+`docs/superpowers/specs/2026-08-13-sandbox-dev-workflow-design.md`; a
+standalone spike writeup is planned at `docs/spikes/tls-egress.md`.

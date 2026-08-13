@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034
 # Dev workflow for the AgentWall Claude sandbox (Docker Sandboxes / sbx).
 # Owns: the ALLOW_DOMAINS egress rules, the proxy.sandbox/no_proxy.sandbox
 # overrides, and a background mitmweb. `clean` undoes exactly that set.
@@ -97,8 +96,8 @@ cmd_up() {
 }
 
 wait_daemon() {
-  local i
-  for i in $(seq 1 30); do
+  local _
+  for _ in $(seq 1 30); do
     sbx daemon status >/dev/null 2>&1 && return 0
     sleep 0.5
   done
@@ -165,10 +164,10 @@ start_mitmweb() {
     --set web_open_browser=false \
     --set stream_large_bodies=1m >"$MITM_LOG" 2>&1 &
   echo $! >"$MITM_PID"
-  local i
-  for i in $(seq 1 30); do mitm_running && break; sleep 0.5; done
+  local _
+  for _ in $(seq 1 30); do mitm_running && break; sleep 0.5; done
   mitm_running || die "mitmweb did not start listening on :$PROXY_PORT — see $MITM_LOG"
-  for i in $(seq 1 30); do [ -f "$CA_CERT" ] && break; sleep 0.5; done
+  for _ in $(seq 1 30); do [ -f "$CA_CERT" ] && break; sleep 0.5; done
   [ -f "$CA_CERT" ] || die "mitmproxy CA never appeared at $CA_CERT — see $MITM_LOG"
 }
 
