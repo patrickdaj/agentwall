@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034
+# Dev workflow for the AgentWall Claude sandbox (Docker Sandboxes / sbx).
+# Owns: the ALLOW_DOMAINS egress rules, the proxy.sandbox/no_proxy.sandbox
+# overrides, and a background mitmweb. `clean` undoes exactly that set.
+set -euo pipefail
+
+SANDBOX_NAME="claude-agentwall"
+WORKSPACE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROXY_PORT=8888
+PROXY_URL="http://localhost:${PROXY_PORT}"
+NO_PROXY_SANDBOX="claude.com,*.claude.com,claude.ai,*.claude.ai,*.anthropic.com"
+ALLOW_DOMAINS=(
+  api.anthropic.com
+  platform.claude.com
+  github.com
+  raw.githubusercontent.com
+  pypi.org
+  files.pythonhosted.org
+  registry.npmjs.org
+  httpbin.org
+)
+MITM_DIR="${HOME}/.cache/agentwall"
+MITM_LOG="${MITM_DIR}/mitmweb.log"
+MITM_PID="${MITM_DIR}/mitmweb.pid"
+CA_CERT="${HOME}/.mitmproxy/mitmproxy-ca-cert.pem"
+
+info() { printf '==> %s\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+require() { command -v "$1" >/dev/null 2>&1 || die "'$1' not found — $2"; }
+
+# Read one sbx setting's effective value ("" when unset). Tolerates the JSON
+# being either a top-level list or an object wrapping a list.
+get_setting() {
+  sbx settings ls --json 2>/dev/null | python3 -c '
+import json, sys
+key = sys.argv[1]
+data = json.load(sys.stdin)
+items = data if isinstance(data, list) else next(
+    (v for v in data.values() if isinstance(v, list)), [])
+for it in items:
+    if it.get("key") == key or it.get("name") == key:
+        print(it.get("value") or "")
+        break
+' "$1"
+}
+
+# `sbx ls` columns: SANDBOX AGENT STATUS PORTS WORKSPACE
+sandbox_exists() { sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$SANDBOX_NAME"; }
+sandbox_running() { sbx ls 2>/dev/null | awk -v n="$SANDBOX_NAME" '$1==n && $3=="running"' | grep -q .; }
+
+ensure_sandbox() {
+  if ! sandbox_exists; then
+    info "creating sandbox $SANDBOX_NAME (detached)"
+    sbx run claude --name "$SANDBOX_NAME" -d "$WORKSPACE" >/dev/null
+  fi
+}
+
+start_sandbox() {
+  if ! sandbox_running; then
+    info "starting sandbox $SANDBOX_NAME"
+    sbx run --name "$SANDBOX_NAME" -d >/dev/null
+  fi
+}
+
+attach() {
+  [ "${ATTACH:-1}" = "0" ] && return 0
+  exec sbx run claude --name "$SANDBOX_NAME"
+}
+
+run_in_sandbox() { sbx exec "$SANDBOX_NAME" -- sh -c "$1"; }
+
+usage() {
+  cat <<EOF
+Usage: scripts/sandbox.sh <subcommand>
+
+  up       Launch/attach the Claude dev sandbox (policy + no_proxy ensured)
+  inspect  Chain sandbox egress through mitmproxy (CA injected) and attach
+  direct   Remove the mitmproxy chain (default state) and attach
+  verify   Prove the current mode via in-sandbox TLS issuer + HTTPS POST
+  clean    Remove the sandbox, script-owned policy rules, settings, mitmweb
+
+Env: ATTACH=0 skips the interactive attach (for scripting).
+EOF
+}
+
+main() {
+  require sbx "install Docker Sandboxes (https://docs.docker.com/ai/sandboxes/)"
+  require python3 "needed to parse sbx settings JSON"
+  case "${1:-help}" in
+    help|-h|--help) usage ;;
+    *) usage; die "unknown subcommand: ${1:-}" ;;
+  esac
+}
+main "$@"
