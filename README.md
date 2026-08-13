@@ -171,5 +171,5 @@ egresses successfully. `ATTACH=0` skips the interactive attach for scripting.
 
 Findings behind this design (CONNECT chaining, CA-trust requirement, no_proxy
 bypass for OAuth) are documented in
-`docs/superpowers/specs/2026-08-13-sandbox-dev-workflow-design.md`; a
-standalone spike writeup is planned at `docs/spikes/tls-egress.md`.
+`docs/superpowers/specs/2026-08-13-sandbox-dev-workflow-design.md`; the TLS
+egress spike verdict is in `docs/spikes/tls-egress.md`.

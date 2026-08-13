@@ -160,7 +160,7 @@ start_mitmweb() {
   require uvx "install uv (https://docs.astral.sh/uv/)"
   mkdir -p "$MITM_DIR"
   info "starting mitmweb on :$PROXY_PORT (web UI URL + token: $MITM_LOG)"
-  nohup uvx mitmweb -p "$PROXY_PORT" \
+  nohup uvx --from mitmproxy mitmweb -p "$PROXY_PORT" \
     --set web_open_browser=false \
     --set stream_large_bodies=1m >"$MITM_LOG" 2>&1 &
   echo $! >"$MITM_PID"
