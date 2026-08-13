@@ -1446,10 +1446,10 @@ class ChainCorrelator:
             return None
 
         if st.tainted_at is not None and not st.sensitive_seen:
-            sensitive = event.attrs.get("sensitive") or (
-                event.source == "workspace"
-                and event.event_type in {"file_read", "file_write"}
-                and event.attrs.get("path")
+            sensitive = (event.source == "workspace") and (
+                event.attrs.get("sensitive")
+                or (event.event_type in {"file_read", "file_write"}
+                    and event.attrs.get("path"))
             )
             if sensitive:
                 st.sensitive_seen = True
