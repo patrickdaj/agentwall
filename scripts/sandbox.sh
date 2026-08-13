@@ -96,6 +96,25 @@ cmd_up() {
   attach
 }
 
+restart_sandbox() {
+  info "restarting sandbox $SANDBOX_NAME"
+  sbx stop "$SANDBOX_NAME" >/dev/null 2>&1 || true
+  start_sandbox
+}
+
+cmd_direct() {
+  if [ -n "$(get_setting proxy.sandbox)" ]; then
+    info "unsetting proxy.sandbox (direct egress)"
+    sbx settings unset proxy.sandbox >/dev/null
+    restart_sandbox
+  else
+    info "already direct (proxy.sandbox unset)"
+    ensure_sandbox
+    start_sandbox
+  fi
+  attach
+}
+
 usage() {
   cat <<EOF
 Usage: scripts/sandbox.sh <subcommand>
@@ -115,6 +134,7 @@ main() {
   require python3 "needed to parse sbx settings JSON"
   case "${1:-help}" in
     up) cmd_up ;;
+    direct) cmd_direct ;;
     help|-h|--help) usage ;;
     *) usage; die "unknown subcommand: ${1:-}" ;;
   esac
