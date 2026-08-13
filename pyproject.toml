@@ -33,6 +33,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["integration: opt-in tests needing a live Docker Sandbox (set AGENTWALL_LIVE_SANDBOX=1)"]
 
 [tool.ruff]
 line-length = 100
