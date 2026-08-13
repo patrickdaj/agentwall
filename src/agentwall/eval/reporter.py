@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import shutil
+import tempfile
 from pathlib import Path
 
 from agentwall.detect.tier0_rules import RulesConfig
@@ -53,12 +55,16 @@ async def run_eval(rules: RulesConfig | None = None) -> tuple[list[ScenarioScore
     rules = rules or _RULES
     scenarios = load_scenarios("agentwall.eval.scenarios") + load_scenarios("agentwall.eval.benign")
     scores: list[ScenarioScore] = []
-    for scn in scenarios:
-        try:
-            observed = await run_scenario(scn, Path("/tmp") / f"eval-{scn.id}", rules)
-            scores.append(score(scn, observed))
-        except Exception:  # a broken scenario is an error outcome, never crashes the run
-            scores.append(ScenarioScore(id=scn.id, family=scn.family, status=scn.status,
-                                        outcome="error", is_regression=(scn.status == "caught"),
-                                        is_false_positive=False, benign=scn.benign))
+    base = Path(tempfile.mkdtemp(prefix="agentwall-eval-"))  # unique per run, avoids SQLite races
+    try:
+        for scn in scenarios:
+            try:
+                observed = await run_scenario(scn, base / scn.id, rules)
+                scores.append(score(scn, observed))
+            except Exception:  # a broken scenario is an error outcome, never crashes the run
+                scores.append(ScenarioScore(id=scn.id, family=scn.family, status=scn.status,
+                                            outcome="error", is_regression=(scn.status == "caught"),
+                                            is_false_positive=False, benign=scn.benign))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
     return scores, render_report(scores)

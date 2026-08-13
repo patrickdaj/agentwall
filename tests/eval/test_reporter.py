@@ -16,6 +16,14 @@ def test_render_report_has_rates_and_matrix():
     assert "exfil" in out and "mcp" in out            # coverage matrix rows
 
 
+def test_render_report_counts_false_positive_rate():
+    scores = [_s(id="a", benign=False, outcome="caught"),
+              _s(id="b", benign=True, outcome="missed", is_false_positive=True)]
+    out = render_report(scores)
+    assert "Detection rate: 1/1" in out          # 1 attack, caught
+    assert "False-positive rate: 1/1" in out      # 1 benign, 1 FP
+
+
 def test_has_regression_true_when_any_regression():
     assert has_regression([_s(), _s(is_regression=True)]) is True
     assert has_regression([_s(), _s()]) is False
