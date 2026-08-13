@@ -55,5 +55,36 @@ async def test_live_watch_emits_event(tmp_path):
     assert any(e.source == "workspace" for e in seen)
 
 
+def test_payload_ref_set_for_sensitive_write(tmp_path):
+    blobs = {}
+    def blob_put(b):
+        ref = f"blob:{len(blobs) + 1}"
+        blobs[ref] = b
+        return ref
+    sensor = WorkspaceSensor(workspace=tmp_path, session_id="s", blob_put=blob_put)
+    f = tmp_path / ".env"
+    f.write_text("SECRET=abc")
+    e = sensor.make_event("file_write", str(f))
+    assert e.payload_ref is not None
+    assert blobs[e.payload_ref] == b"SECRET=abc"
+
+
+def test_no_payload_ref_for_normal_write(tmp_path):
+    sensor = WorkspaceSensor(workspace=tmp_path, session_id="s", blob_put=lambda b: "blob:1")
+    f = tmp_path / "src.py"
+    f.write_text("x = 1")
+    e = sensor.make_event("file_write", str(f))
+    assert e.payload_ref is None
+
+
+def test_no_blob_put_means_no_payload_ref(tmp_path):
+    sensor = WorkspaceSensor(workspace=tmp_path, session_id="s")  # no blob_put
+    f = tmp_path / ".env"
+    f.write_text("SECRET=abc")
+    e = sensor.make_event("file_write", str(f))
+    assert e.payload_ref is None
+    assert e.content_hash is not None
+
+
 async def _collect(sink, e):
     sink.append(e)
