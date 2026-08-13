@@ -40,14 +40,20 @@ class PolicyEngine:
         return True
 
     def evaluate(self, event: SecurityEvent, detections: list[Detection], in_chain: bool) -> Decision:
+        best: Decision | None = None
         for rule in self._rules:
             if self._matches(rule.get("match", {}), event, detections, in_chain):
                 verdict = Verdict[rule["action"]]
                 need = _CAP_FOR.get(verdict)
                 if need and need not in self._caps:
-                    return Decision(verdict=Verdict.WARN, matched_rule=rule["name"],
+                    cand = Decision(verdict=Verdict.WARN, matched_rule=rule["name"],
                                     explanation=f"{verdict.name} downgraded to WARN: adapter lacks '{need}'",
                                     downgraded=True)
-                return Decision(verdict=verdict, matched_rule=rule["name"],
-                                explanation=f"matched rule '{rule['name']}'")
-        return Decision(verdict=Verdict.ALLOW, matched_rule=None, explanation="no rule matched")
+                else:
+                    cand = Decision(verdict=verdict, matched_rule=rule["name"],
+                                    explanation=f"matched rule '{rule['name']}'")
+                if best is None or cand.verdict > best.verdict:
+                    best = cand
+        if best is None:
+            return Decision(verdict=Verdict.ALLOW, matched_rule=None, explanation="no rule matched")
+        return best
