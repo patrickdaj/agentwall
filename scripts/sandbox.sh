@@ -96,9 +96,21 @@ cmd_up() {
   attach
 }
 
-restart_sandbox() {
-  info "restarting sandbox $SANDBOX_NAME"
-  sbx stop "$SANDBOX_NAME" >/dev/null 2>&1 || true
+wait_daemon() {
+  local i
+  for i in $(seq 1 30); do
+    sbx daemon status >/dev/null 2>&1 && return 0
+    sleep 0.5
+  done
+  die "sbx daemon did not become ready after restart (see: sbx daemon status)"
+}
+
+# proxy.sandbox changes only apply on a daemon restart (a sandbox restart is
+# insufficient — verified). This briefly stops ALL sandboxes on the host.
+apply_proxy_change() {
+  info "restarting sbx daemon to apply proxy change (briefly stops all sandboxes)"
+  sbx daemon restart >/dev/null 2>&1 || die "sbx daemon restart failed (see: sbx daemon status)"
+  wait_daemon
   start_sandbox
 }
 
@@ -106,7 +118,7 @@ cmd_direct() {
   if [ -n "$(get_setting proxy.sandbox)" ]; then
     info "unsetting proxy.sandbox (direct egress)"
     sbx settings unset proxy.sandbox >/dev/null
-    restart_sandbox
+    apply_proxy_change
   else
     info "already direct (proxy.sandbox unset)"
     ensure_sandbox
