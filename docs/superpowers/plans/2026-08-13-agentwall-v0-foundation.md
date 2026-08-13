@@ -1739,7 +1739,8 @@ class WorkspaceSensor:
     def make_event(self, kind: str, path: str) -> SecurityEvent:
         attrs = {"path": path, **classify_path(path)}
         trust = "trusted"
-        if self._skills and str(Path(path)).startswith(str(self._skills)):
+        skills = self._skills.resolve() if self._skills else None
+        if skills is not None and Path(path).resolve().is_relative_to(skills):
             trust = "tainted"
             attrs["skills_store"] = True
         chash = None
