@@ -260,14 +260,37 @@ git commit -m "feat: sandbox.sh up — idempotent policy/no_proxy ensure + launc
 
 **Interfaces:**
 - Consumes: Task 1 helpers; Task 2's `ensure_policy`/`ensure_no_proxy` are NOT called here (direct only removes the chain).
-- Produces: `restart_sandbox()` (used by Task 5's `cmd_inspect`), `cmd_direct()`.
+- Produces: `wait_daemon()`, `apply_proxy_change()` (both reused by Task 5's `cmd_inspect`), `cmd_direct()`.
 
-- [ ] **Step 1: Add `restart_sandbox` and `cmd_direct`**
+> **Live-verified correction (2026-08-13):** a `proxy.sandbox` change takes
+> effect ONLY after `sbx daemon restart` — a sandbox stop/start has no effect
+> (confirmed both directions: set+daemon-restart engages mitmproxy,
+> unset+daemon-restart restores the real CA; sandbox-only restart does
+> nothing). `sbx daemon` offers only `restart` (no lighter reload). The
+> daemon restart briefly stops ALL running sandboxes on the host and adds a
+> few seconds per toggle — acceptable on a single-dev machine, and it
+> preserves the approved one-command-each-way behavior. The original plan's
+> `restart_sandbox` (sandbox-only) is therefore replaced by
+> `apply_proxy_change` (daemon restart + readiness wait + start).
+
+- [ ] **Step 1: Add `wait_daemon`, `apply_proxy_change`, and `cmd_direct`**
 
 ```bash
-restart_sandbox() {
-  info "restarting sandbox $SANDBOX_NAME"
-  sbx stop "$SANDBOX_NAME" >/dev/null 2>&1 || true
+wait_daemon() {
+  local i
+  for i in $(seq 1 30); do
+    sbx daemon status >/dev/null 2>&1 && return 0
+    sleep 0.5
+  done
+  die "sbx daemon did not become ready after restart (see: sbx daemon status)"
+}
+
+# proxy.sandbox changes only apply on a daemon restart (a sandbox restart is
+# insufficient — verified). This briefly stops ALL sandboxes on the host.
+apply_proxy_change() {
+  info "restarting sbx daemon to apply proxy change (briefly stops all sandboxes)"
+  sbx daemon restart >/dev/null 2>&1 || die "sbx daemon restart failed (see: sbx daemon status)"
+  wait_daemon
   start_sandbox
 }
 
@@ -275,7 +298,7 @@ cmd_direct() {
   if [ -n "$(get_setting proxy.sandbox)" ]; then
     info "unsetting proxy.sandbox (direct egress)"
     sbx settings unset proxy.sandbox >/dev/null
-    restart_sandbox
+    apply_proxy_change
   else
     info "already direct (proxy.sandbox unset)"
     ensure_sandbox
@@ -292,21 +315,23 @@ Add case: `    direct) cmd_direct ;;`
 Run: `shellcheck scripts/sandbox.sh`
 Expected: clean.
 
-- [ ] **Step 3: Run it (live host currently has proxy.sandbox set — this exercises the unset path)**
+- [ ] **Step 3: Run it and confirm the chain actually disengages**
 
-Run: `ATTACH=0 scripts/sandbox.sh direct && sbx settings ls --no-trunc | grep -c "proxy.sandbox.*override"; echo ok`
-Expected: `unsetting proxy.sandbox` + restart lines; grep count `0` (no override left; grep exiting 1 into `-c` prints 0); `ok`.
+To exercise the unset path, first ensure `proxy.sandbox` is set:
+`sbx settings set proxy.sandbox http://localhost:8888` (if not already).
+Then run: `ATTACH=0 scripts/sandbox.sh direct && ATTACH=0 scripts/sandbox.sh up && scripts/sandbox.sh verify`
+Expected: `unsetting proxy.sandbox`, `restarting sbx daemon ...`, then `verify OK (direct mode)` with an `issuer:` line naming a real CA (e.g. Amazon) and `http=200`. The `verify` step is the real proof the daemon restart disengaged mitmproxy — a settings-only grep would pass even while the daemon still routed through the proxy (the exact bug this task fixes).
 
-- [ ] **Step 4: Re-run to prove idempotency**
+- [ ] **Step 4: Re-run to prove idempotency (already-direct path skips the daemon restart)**
 
 Run: `ATTACH=0 scripts/sandbox.sh direct`
-Expected: `already direct (proxy.sandbox unset)`, sandbox stays running, exit 0.
+Expected: `already direct (proxy.sandbox unset)`, no daemon-restart line, exit 0.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add scripts/sandbox.sh
-git commit -m "feat: sandbox.sh direct — drop upstream proxy chain and restart"
+git commit -m "feat: sandbox.sh direct — drop upstream proxy chain via daemon restart"
 ```
 
 ---
@@ -382,7 +407,7 @@ git commit -m "feat: sandbox.sh verify — TLS-issuer + POST proof of current eg
 - Modify: `scripts/sandbox.sh`
 
 **Interfaces:**
-- Consumes: `ensure_policy`, `ensure_no_proxy` (Task 2), `restart_sandbox` (Task 3), `cmd_verify` (Task 4), Task 1 helpers/constants.
+- Consumes: `ensure_policy`, `ensure_no_proxy` (Task 2), `apply_proxy_change`/`wait_daemon` (Task 3), `cmd_verify` (Task 4), Task 1 helpers/constants.
 - Produces: `mitm_running()`, `start_mitmweb()`, `inject_ca()` (reused by Task 6's `clean` only via `MITM_PID`), `cmd_inspect()`.
 
 - [ ] **Step 1: Add `mitm_running`, `start_mitmweb`, `inject_ca`, `cmd_inspect`**
@@ -428,12 +453,15 @@ cmd_inspect() {
   ensure_policy
   ensure_no_proxy
   start_mitmweb
+  ensure_sandbox
   if [ "$(get_setting proxy.sandbox)" != "$PROXY_URL" ]; then
     info "chaining sandbox egress through $PROXY_URL"
     sbx settings set proxy.sandbox "$PROXY_URL" >/dev/null
+    apply_proxy_change            # daemon restart — required for the change to engage
+  else
+    info "proxy.sandbox already $PROXY_URL"
+    start_sandbox
   fi
-  ensure_sandbox
-  restart_sandbox
   inject_ca
   cmd_verify
   attach
@@ -441,6 +469,8 @@ cmd_inspect() {
 ```
 
 Add case: `    inspect) cmd_inspect ;;`
+
+Note: `apply_proxy_change` and `wait_daemon` are provided by Task 3. `cmd_inspect` daemon-restarts only when it actually changes `proxy.sandbox`; on re-run it just ensures the sandbox is running and re-injects the CA, and `cmd_verify` is the guard that the chain is genuinely engaged.
 
 - [ ] **Step 2: Lint**
 
@@ -450,23 +480,23 @@ Expected: clean.
 - [ ] **Step 3: Run it end-to-end**
 
 Run: `ATTACH=0 scripts/sandbox.sh inspect`
-Expected: policy/no_proxy already ensured (quiet); either `proxy already listening` (session mitmproxy still up) or `starting mitmweb`; `chaining sandbox egress`; restart; CA injection; `verify OK (inspect mode)` with `issuer: CN=mitmproxy`.
+Expected: policy/no_proxy already ensured (quiet); either `proxy already listening` (session mitmproxy still up) or `starting mitmweb`; `chaining sandbox egress`; `restarting sbx daemon ...`; CA injection; `verify OK (inspect mode)` with `issuer: CN=mitmproxy` and `http=200`.
 
 - [ ] **Step 4: Re-run to prove idempotency**
 
 Run: `ATTACH=0 scripts/sandbox.sh inspect`
-Expected: no re-setting of proxy.sandbox; restart + CA re-injection still run (harmless, overwrite-in-place); `verify OK (inspect mode)`.
+Expected: `proxy.sandbox already http://localhost:8888` (no `set`, no daemon restart); CA re-injection still runs (harmless, overwrite-in-place); `verify OK (inspect mode)`.
 
-- [ ] **Step 5: Flip back and forth**
+- [ ] **Step 5: Flip back and forth (the spec's toggle requirement)**
 
-Run: `ATTACH=0 scripts/sandbox.sh direct && scripts/sandbox.sh verify && ATTACH=0 scripts/sandbox.sh inspect`
-Expected: `verify OK (direct mode)` in the middle, `verify OK (inspect mode)` at the end. This is the spec's toggle requirement.
+Run: `ATTACH=0 scripts/sandbox.sh direct && ATTACH=0 scripts/sandbox.sh up && scripts/sandbox.sh verify && ATTACH=0 scripts/sandbox.sh inspect`
+Expected: `verify OK (direct mode)` (issuer real CA) in the middle, `verify OK (inspect mode)` (issuer mitmproxy) at the end. Each direction includes a `restarting sbx daemon ...` line — that is what makes the toggle actually take effect. (The intermediate `up` restarts the sandbox after `direct`'s daemon bounce, since a detached sandbox may idle to stopped.)
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add scripts/sandbox.sh
-git commit -m "feat: sandbox.sh inspect — mitmweb chain with CA injection and verify"
+git commit -m "feat: sandbox.sh inspect — mitmweb chain (daemon restart) + CA injection + verify"
 ```
 
 ---
@@ -554,6 +584,11 @@ background mitmweb) is owned and undone by the script.
 | `make sandbox` | Launch/attach the Claude sandbox; ensures the dev egress allowlist and the Anthropic no-proxy bypass (login works on first run) |
 | `make sandbox-inspect` | Chain all sandbox egress (except Anthropic auth/API) through mitmproxy on :8888 with the CA trusted in-sandbox; web UI URL in `~/.cache/agentwall/mitmweb.log` |
 | `make sandbox-direct` | Back to direct egress (default state) |
+
+> **Note:** switching between inspect and direct runs `sbx daemon restart` —
+> `proxy.sandbox` changes only take effect on a daemon restart, not a sandbox
+> restart (verified). The daemon restart briefly stops any other running
+> sandboxes on your machine and adds a few seconds to the toggle.
 | `make sandbox-clean` | Remove sandbox, script-owned policy rules and settings overrides, stop mitmweb |
 
 `scripts/sandbox.sh verify` proves the current mode: it checks the TLS issuer
