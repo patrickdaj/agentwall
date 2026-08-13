@@ -57,6 +57,27 @@ deferred scope or a hardening item for v1. Ordered by impact.
 - `WorkspaceSensor.stop()` does a synchronous `Observer.join()` from the event
   loop thread.
 
+## v1 direction: full plugin architecture (decided 2026-08-13)
+
+AgentWall v1 becomes a **full plugin system**, not a monolith. The v0 `Protocol`
+seams (`RuntimeSensor`, `Detector`, `SecurityClassifier`, `PolicyEngine`,
+`RuntimeAdapter`) exist, but the daemon hardcodes which implementations it
+constructs. v1 formalizes:
+
+- a **registry** the daemon loads from instead of hardcoding constructors;
+- **entry-point discovery** (e.g. `agentwall.detectors` / `agentwall.sensors` /
+  `agentwall.adapters` groups) so third parties pip-install a package and it is
+  picked up automatically;
+- **config-driven enablement** — which plugins are on, in what order, with what
+  settings;
+- the **policy engine remains the trust anchor**: plugins emit `Detection`s only
+  and never produce a `Verdict`, so a third-party scanner cannot escalate
+  privilege. This boundary already holds in v0 and is what makes a plugin
+  ecosystem safe.
+
+This lets the community add detectors (YARA, Semgrep, TruffleHog), sensors, and
+runtime adapters (clawk, Clawker) without forking.
+
 ## Human-run task (not code)
 
 - **TLS egress spike** (plan Task 2): determine whether Docker Sandboxes'
