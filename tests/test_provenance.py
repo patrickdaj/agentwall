@@ -22,6 +22,17 @@ def test_no_chain_when_egress_without_precursors():
     assert c.observe(_e("egress", 1.0, destination="x")) is None
 
 
+def test_non_workspace_sensitive_event_cannot_be_step2():
+    c = ChainCorrelator(window_s=120)
+    # step 1: untrusted source
+    c.observe(_e("workspace", 1.0, untrusted_source="evil"))
+    # a premature EGRESS carrying sensitive=True must NOT be consumed as sensitive-access
+    assert c.observe(_e("egress", 2.0, destination="exfil-1.xyz", sensitive=True)) is None
+    # a later legitimate-looking egress must NOT fraudulently complete a chain,
+    # because a real workspace sensitive-access step never occurred
+    assert c.observe(_e("egress", 3.0, destination="exfil-2.xyz")) is None
+
+
 def test_window_expiry_breaks_chain():
     c = ChainCorrelator(window_s=10)
     c.observe(_e("workspace", 1.0, untrusted_source="evil"))
