@@ -12,15 +12,18 @@ _SECRET = b"token=ghp_012345678901234567890123456789ABCD"
 
 
 @pytest.mark.asyncio
-async def test_driver_derives_classification_not_authored(tmp_path):
-    # ANTI-SELF-MARKING: scenario never sets implicit_exec; the real classifier must derive it.
+async def test_driver_earns_detection_from_real_path_not_authored(tmp_path):
+    # ANTI-SELF-MARKING: the scenario authors NO detection attrs. The real tier-0
+    # RulesDetector matches the real file's path (/w/.git/hooks/post-commit) against
+    # the sensitive_path_globs and produces a sensitive-path-access detection -> WARN.
+    # Detection is earned from the raw artifact's path, never handed to the detector.
     s = Scenario(id="hook", title="git hook", family="persistence", provenance=_PROV,
                  actions=[FileWrite(path="/w/.git/hooks/post-commit", content=b"#!/bin/sh\necho hi")],
                  expected=ExpectedOutcome(min_verdict="WARN"), status="caught",
                  sensors_required=["workspace"])
     out = await run_scenario(s, tmp_path, _RULES)
     assert isinstance(out, ObservedOutcome)
-    assert out.warned_or_worse >= 1  # detector discovered implicit_exec from the path
+    assert out.warned_or_worse >= 1  # earned from the real path via the real tier-0 rule
 
 
 @pytest.mark.asyncio
