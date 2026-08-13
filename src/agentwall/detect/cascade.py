@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Callable
 
 from pydantic import BaseModel
@@ -42,7 +43,7 @@ class Cascade:
         for d in self._t0:
             dets.extend(d.inspect(event, payload))
         for d in self._t1:
-            dets.extend(d.inspect(event, payload))
+            dets.extend(await asyncio.to_thread(d.inspect, event, payload))
         escalated = False
         if self._escalate(dets):
             self.stats.tier2_invocations += 1

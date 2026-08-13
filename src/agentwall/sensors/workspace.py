@@ -11,6 +11,8 @@ from watchdog.observers import Observer
 
 from agentwall.events import SecurityEvent, content_hash, new_event
 
+MAX_BODY = 1_048_576
+
 IMPLICIT_EXEC_PATTERNS = [
     "**/.git/hooks/*", "**/package.json", "**/Makefile",
     "**/.github/workflows/*", "**/.claude/**", "**/.vscode/tasks.json",
@@ -47,11 +49,13 @@ class _Handler(FileSystemEventHandler):
 
 class WorkspaceSensor:
     def __init__(self, workspace: Path, session_id: str, skills_store: Path | None = None,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 blob_put: Callable[[bytes], str] | None = None) -> None:
         self._workspace = Path(workspace)
         self._session = session_id
         self._skills = Path(skills_store) if skills_store else None
         self._clock = clock
+        self._blob_put = blob_put
         self._observer: Observer | None = None
 
     def make_event(self, kind: str, path: str) -> SecurityEvent:
@@ -63,14 +67,21 @@ class WorkspaceSensor:
             trust = "tainted"
             attrs["skills_store"] = True
         chash = None
+        payload_ref = None
         p = Path(path)
         if p.is_file():
             try:
-                chash = content_hash(p.read_bytes())
+                with p.open("rb") as fh:
+                    data = fh.read(MAX_BODY)
             except OSError:
-                chash = None
+                data = None
+            if data is not None:
+                chash = content_hash(data)
+                if self._blob_put is not None and (attrs.get("sensitive") or attrs.get("implicit_exec")):
+                    payload_ref = self._blob_put(data)
         return new_event(event_type=kind, session_id=self._session, source="workspace",
-                         ts=self._clock(), trust=trust, content_hash=chash, attrs=attrs)
+                         ts=self._clock(), trust=trust, content_hash=chash,
+                         payload_ref=payload_ref, attrs=attrs)
 
     async def run(self, bus) -> None:
         loop = asyncio.get_running_loop()

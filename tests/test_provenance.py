@@ -38,3 +38,34 @@ def test_window_expiry_breaks_chain():
     c.observe(_e("workspace", 1.0, untrusted_source="evil"))
     c.observe(_e("workspace", 2.0, event_type="file_read", path="/w/.env", sensitive=True))
     assert c.observe(_e("egress", 100.0, destination="x")) is None
+
+
+def _tainted(ts=1.0):
+    return new_event(event_type="file_write", session_id="s", source="workspace", ts=ts,
+                     trust="tainted", attrs={"untrusted_source": "evil/README.md"})
+
+
+def _egress(ts=2.0):
+    return new_event(event_type="network_upload", session_id="s", source="egress", ts=ts,
+                     attrs={"destination": "first-seen.xyz"})
+
+
+def test_secret_egress_completes_two_hop_chain():
+    corr = ChainCorrelator()
+    assert corr.observe(_tainted()) is None
+    chain = corr.observe(_egress(), has_secret=True)
+    assert chain is not None
+    assert chain.steps == ["untrusted-source: evil/README.md", "secret-egress: first-seen.xyz"]
+    assert len(chain.event_ids) == 2
+
+
+def test_egress_without_secret_or_sensitive_is_not_a_chain():
+    corr = ChainCorrelator()
+    assert corr.observe(_tainted()) is None
+    assert corr.observe(_egress(), has_secret=False) is None
+
+
+def test_secret_egress_outside_window_resets():
+    corr = ChainCorrelator(window_s=10.0)
+    assert corr.observe(_tainted(ts=1.0)) is None
+    assert corr.observe(_egress(ts=100.0), has_secret=True) is None

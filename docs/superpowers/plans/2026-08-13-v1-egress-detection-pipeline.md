@@ -660,13 +660,16 @@ git commit -m "feat: EgressSensor — unix-socket ingest, mitmdump supervision, 
 ## Task 5: Daemon integration — wire sensors, has_secret, async offload
 
 **Files:**
+- Modify: `src/agentwall/policy/engine.py`
 - Modify: `src/agentwall/daemon.py`
 - Modify: `src/agentwall/detect/cascade.py`
+- Test: `tests/policy/test_engine.py`
 - Test: `tests/test_daemon.py`
 
 **Interfaces:**
 - Consumes: `EgressSensor` (Task 4), `WorkspaceSensor(blob_put=...)` (Task 2), `ChainCorrelator.observe(event, has_secret=...)` (Task 1), `EventStore.put_blob/dead_letter`, `CascadeResult.detections`.
 - Produces:
+  - **`PolicyEngine.evaluate` returns the MOST SEVERE applicable verdict** across all matching rules (each capability-gated) instead of the first match. Decided 2026-08-13: a secret-bearing egress that is also in an exfil chain matches both `block-secret-egress` (BLOCK→WARN when the adapter can't inline-block) and `quarantine-exfil-chain` (QUARANTINE); the more severe surviving verdict (QUARANTINE) must win. Order-independent; hardens a latent v0 fragility.
   - `DaemonConfig` gains `enable_egress: bool = False`, `egress_socket: Path | None = None`, `proxy_port: int = 8888`.
   - `Cascade.run` executes Tier-1 detectors via `asyncio.to_thread` (non-blocking event loop).
   - `Daemon._on_event` computes `has_secret` from detections and passes it to `observe`; `adapter.quarantine` is offloaded via `asyncio.to_thread`.
@@ -734,7 +737,59 @@ async def test_health_reports_egress_degraded_field(tmp_path):
 Run: `uv run pytest tests/test_daemon.py -k "secret_bearing or egress_degraded" -v`
 Expected: FAIL (chain not completed / `egress_degraded` missing).
 
-- [ ] **Step 3: Offload Tier-1 in the cascade**
+- [ ] **Step 3: Policy engine — return the most severe applicable verdict**
+
+In `src/agentwall/policy/engine.py`, change `evaluate` from first-match to
+most-severe-applicable-match. Compute each matching rule's capability-gated
+verdict (BLOCK/QUARANTINE downgrade to WARN when the adapter lacks the
+capability) and return the `Decision` with the highest `Verdict` (an
+`IntEnum`, so `>` compares severity). Replace the whole `evaluate` method:
+
+```python
+    def evaluate(self, event: SecurityEvent, detections: list[Detection], in_chain: bool) -> Decision:
+        best: Decision | None = None
+        for rule in self._rules:
+            if self._matches(rule.get("match", {}), event, detections, in_chain):
+                verdict = Verdict[rule["action"]]
+                need = _CAP_FOR.get(verdict)
+                if need and need not in self._caps:
+                    cand = Decision(verdict=Verdict.WARN, matched_rule=rule["name"],
+                                    explanation=f"{verdict.name} downgraded to WARN: adapter lacks '{need}'",
+                                    downgraded=True)
+                else:
+                    cand = Decision(verdict=verdict, matched_rule=rule["name"],
+                                    explanation=f"matched rule '{rule['name']}'")
+                if best is None or cand.verdict > best.verdict:
+                    best = cand
+        if best is None:
+            return Decision(verdict=Verdict.ALLOW, matched_rule=None, explanation="no rule matched")
+        return best
+```
+
+Add two tests to `tests/policy/test_engine.py` (imports already present there):
+
+```python
+def test_secret_egress_in_chain_quarantines_over_downgraded_block():
+    # block-secret-egress (BLOCK) downgrades to WARN without 'block'; quarantine-exfil-chain
+    # (QUARANTINE) survives with 'quarantine' — the more severe verdict must win.
+    pe = PolicyEngine.from_yaml(POLICY, capabilities={"quarantine"})
+    d = pe.evaluate(_egress(), [Detection(tier=1, classification="secret:aws", confidence=0.9)],
+                    in_chain=True)
+    assert d.verdict is Verdict.QUARANTINE and d.matched_rule == "quarantine-exfil-chain"
+
+
+def test_secret_egress_not_in_chain_downgrades_to_warn():
+    # only block-secret-egress matches; no 'block' capability → downgraded WARN.
+    pe = PolicyEngine.from_yaml(POLICY, capabilities={"quarantine"})
+    d = pe.evaluate(_egress(), [Detection(tier=1, classification="secret:aws", confidence=0.9)],
+                    in_chain=False)
+    assert d.verdict is Verdict.WARN and d.downgraded is True
+```
+
+Run: `uv run pytest tests/policy/test_engine.py -v`
+Expected: the two new tests PASS and the four pre-existing engine tests still PASS (each matches a single rule, so most-severe == first-match for them).
+
+- [ ] **Step 4: Offload Tier-1 in the cascade**
 
 In `src/agentwall/detect/cascade.py`, make the Tier-1 loop non-blocking. Add `import asyncio` at the top, and change the Tier-1 loop inside `run`:
 
@@ -745,7 +800,7 @@ In `src/agentwall/detect/cascade.py`, make the Tier-1 loop non-blocking. Add `im
             dets.extend(await asyncio.to_thread(d.inspect, event, payload))
 ```
 
-- [ ] **Step 4: Wire the daemon**
+- [ ] **Step 5: Wire the daemon**
 
 In `src/agentwall/daemon.py`:
 
@@ -838,16 +893,16 @@ Add the health field:
         }
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 6: Run tests**
 
-Run: `uv run pytest tests/test_daemon.py -v && uv run pytest -q`
-Expected: new daemon tests PASS; full suite green (egress disabled by default, so corpus/bench/existing daemon tests are unaffected).
+Run: `uv run pytest tests/test_daemon.py tests/policy/test_engine.py -v && uv run pytest -q`
+Expected: new daemon + policy tests PASS; full suite green (egress disabled by default, so corpus/bench/existing daemon tests are unaffected). `test_secret_bearing_egress_completes_chain_and_quarantines` now reaches QUARANTINE because the policy engine returns the most severe applicable verdict.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/agentwall/daemon.py src/agentwall/detect/cascade.py tests/test_daemon.py
-git commit -m "feat: daemon wires EgressSensor + payloads, secret-egress chain, async offload"
+git add src/agentwall/policy/engine.py src/agentwall/daemon.py src/agentwall/detect/cascade.py tests/policy/test_engine.py tests/test_daemon.py
+git commit -m "feat: daemon wires EgressSensor + payloads, secret-egress chain, async offload; policy returns most-severe applicable verdict"
 ```
 
 ---
@@ -880,6 +935,7 @@ Create `tests/integration/__init__.py` (empty) and `tests/integration/test_egres
 import asyncio
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -915,10 +971,13 @@ async def test_row1_live_egress_quarantines(tmp_path):
                        db_path=tmp_path / "ev.db", policy_path=Path("src/agentwall/policy/default_policy.yaml"),
                        rules=_RULES, enable_egress=True, proxy_port=8888)
     d = Daemon(cfg, adapter=DockerSandboxAdapter(workspace=tmp_path))
-    # taint the session with an untrusted-source event (stands in for the poisoned-README write)
+    # taint the session with an untrusted-source event (stands in for the poisoned-README write).
+    # ts must be near real wall-clock time: the live egress event carries mitmproxy's real
+    # epoch timestamp, and ChainCorrelator only links events within its 120s window — a
+    # placeholder like ts=1.0 would fall outside the window and the chain would never form.
     from agentwall.events import new_event
     await d.submit(new_event(event_type="file_write", session_id="claude-agentwall",
-                             source="workspace", ts=1.0, trust="tainted",
+                             source="workspace", ts=time.time(), trust="tainted",
                              attrs={"untrusted_source": "evil.example/README.md"}))
     await d.start()
     try:
