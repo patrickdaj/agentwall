@@ -72,6 +72,16 @@ Constants at the top of the script:
 - Fail fast with a plain message naming the failed step and likely fix; on
   egress-looking failures print the `sbx policy log $SANDBOX_NAME` hint. No
   retries.
+- **Proxy changes need a daemon restart (live-verified 2026-08-13).** A
+  `proxy.sandbox` change takes effect only after `sbx daemon restart`; a
+  sandbox stop/start does nothing (confirmed both directions). `sbx daemon`
+  has no lighter reload. So `inspect` and `direct` apply proxy changes via
+  `apply_proxy_change` (daemon restart → `wait_daemon` readiness poll →
+  `start_sandbox`), gated on the setting actually changing. Cost: the daemon
+  restart briefly stops all sandboxes on the host and adds a few seconds per
+  toggle — acceptable on a single-dev machine and invisible to the approved
+  one-command-each-way behavior. `verify` is the guard that the change
+  actually engaged.
 
 ### Known limitations (accepted)
 
