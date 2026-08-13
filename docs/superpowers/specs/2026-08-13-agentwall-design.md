@@ -130,8 +130,13 @@ so a future Rust sensor can produce events without changing consumers.
    - the cross-sandbox shared **skills store** (writable across sandboxes);
    - sensitive-path access (`~/.ssh`, `~/.aws`, `.env`, etc.).
 2. **EgressSensor** — Docker Sandboxes: upstream-proxy chaining. Metadata always
-   (domain, method, size, timing); payloads if the TLS spike passes. Plain Docker:
-   our own mitmproxy with injected CA → full payload DLP.
+   (domain, method, size, timing); payloads if the TLS spike passes. Plain Docker /
+   clawk: our own mitmproxy with injected CA → full payload DLP. **Candidate cheaper
+   feed:** Clawker already emits per-decision egress events over eBPF (allowed /
+   denied / bypassed). Where AgentWall rides on Clawker, subscribing to that stream is
+   a ready-made EgressSensor source that sidesteps the MITM-CA setup — evaluate it
+   before building our own proxy on that path. (It is network-decision telemetry, not
+   payload inspection, so it complements rather than replaces payload DLP.)
 3. **MCPSensor** (observation in v1) — watches MCP gateway registration/config, flags
    host-side stdio servers (they run with *host* permissions — a documented gap),
    feeds registrations into the provenance graph. Does **not** overlap Docker's
@@ -271,8 +276,8 @@ The corpus is the test suite, the proof of differentiation, and the marketing.
 | 8 | Sandbox policy drift: agent-induced allowlist widening | ❌ No |
 | 9 | Benign control suite: real coding sessions → **must stay silent** (FP budget) | n/a |
 
-Rows 2–5 and 8 are what Pipelock/AEGIS/Coder structurally cannot see. Row 9 is the
-discipline that keeps detection honest.
+Rows 2–5 and 8 are what Pipelock/AEGIS/Coder (and the substrate egress firewalls)
+structurally cannot see. Row 9 is the discipline that keeps detection honest.
 
 ---
 
@@ -341,16 +346,35 @@ state proven against the corpus.
 
 ---
 
-## 13. Competitive positioning
+## 13. Substrates vs. competitors
+
+A critical distinction the source conversations blurred: the sandbox tools are **not
+competitors** — they are the **runtimes AgentWall rides on**. They do containment; we
+do understanding. Their own docs disclaim everything in AgentWall's charter, which is
+the strongest validation the charter is real.
+
+### 13.1 Substrates (runtime adapter targets — we consume, never rebuild)
+
+| Substrate | Provides (isolation layer) | Explicitly does NOT do (per its own docs) | AgentWall relationship |
+|-----------|----------------------------|-------------------------------------------|------------------------|
+| **Docker Sandboxes** | microVM, host-side proxy w/ credential injection, deny-by-default allowlist, MCP gateway (authorization) | content inspection, DLP, injection detection, provenance, dynamic policy | Flagship adapter; TLS wall gates egress payload visibility (§7) |
+| **clawk** | Firecracker/HVF microVM, gvproxy DNS-aware egress allowlist, ssh-agent forwarding | *"content inspection or DLP, prompt injection detection, provenance tracking, policy engines beyond network allow-listing"* — verbatim | v1.x adapter; we own the network here → MITM payload DLP viable |
+| **Clawker** | Docker-container isolation, deny-by-default egress firewall, **eBPF per-decision egress events**, optional OTel/Prometheus | *"content inspection or DLP, taint tracking, policy engine (static only), prompt-injection neutralization"* — verbatim | v1.x adapter; its eBPF egress stream is a **candidate EgressSensor feed** (§4.1), making it more integration target than rival |
+
+The takeaway: every substrate author has independently decided *not* to build the
+semantic layer. AgentWall is that layer, portable across all three.
+
+### 13.2 Competitors (detection tools — same job, different vantage)
 
 | System | Vantage | What AgentWall adds |
 |--------|---------|---------------------|
 | Pipelock | Network (HTTP/WS/MCP/A2A) | Host-boundary + workspace attacks it can't see; correlation |
 | Coder Agent Firewall | Process/network authorization | Semantic provenance; implicit-execution-file coverage |
 | AEGIS | Pre-execution tool-call classification | "What happened before this call" — taint chains |
-| TokenWall | Token-flow provenance (research) | Docker-native production system, deterministic-first latency |
+| TokenWall | Token-flow provenance (research) | Production system on real runtimes, deterministic-first latency |
 | Strathon | Tool-call firewall + MCP gateway | Whole-runtime plane vs per-call firewall |
 
-**One-line positioning:** *Docker handles containment ("the agent can't escape").
-AgentWall handles understanding ("should it be doing this?") — including the
-host-boundary attacks the sandbox model itself leaves open.*
+**One-line positioning:** *The sandbox handles containment ("the agent can't
+escape"). AgentWall handles understanding ("should it be doing this?") — including the
+host-boundary attacks the sandbox model itself leaves open — and rides on top of
+whichever sandbox you already use.*
