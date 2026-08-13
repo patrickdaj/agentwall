@@ -87,3 +87,19 @@ def test_start_proxy_raises_when_port_already_bound(tmp_path):
         assert s.degraded is True
     finally:
         srv.close()
+
+
+def test_egress_event_from_record_builds_event():
+    from agentwall.sensors.egress import egress_event_from_record
+    import base64
+    blobs = {}
+    def blob_put(b):
+        ref = f"blob:{len(blobs) + 1}"
+        blobs[ref] = b
+        return ref
+    rec = {"host": "first-seen.xyz", "method": "POST", "path": "/p", "size": 3,
+           "truncated": False, "body_b64": base64.b64encode(b"abc").decode(), "ts": 2.0}
+    ev = egress_event_from_record(rec, session_id="s", blob_put=blob_put)
+    assert ev.source == "egress" and ev.event_type == "network_upload"
+    assert ev.attrs["destination"] == "first-seen.xyz" and ev.attrs["method"] == "POST"
+    assert ev.payload_ref is not None and blobs[ev.payload_ref] == b"abc"

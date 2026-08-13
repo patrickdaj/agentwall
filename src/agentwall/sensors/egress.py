@@ -19,6 +19,19 @@ def default_socket_path() -> str:
     return os.path.join(base, "agentwall", "egress.sock")
 
 
+def egress_event_from_record(rec: dict, session_id: str,
+                             blob_put: Callable[[bytes], str]) -> SecurityEvent:
+    payload_ref = None
+    body_b64 = rec.get("body_b64")
+    if body_b64:
+        payload_ref = blob_put(base64.b64decode(body_b64))
+    return new_event(event_type="network_upload", session_id=session_id, source="egress",
+                     ts=float(rec.get("ts", 0.0)), payload_ref=payload_ref,
+                     attrs={"destination": rec.get("host"), "method": rec.get("method"),
+                            "path": rec.get("path"), "size": rec.get("size"),
+                            "truncated": bool(rec.get("truncated", False))})
+
+
 class EgressSensor:
     def __init__(self, socket_path: str, blob_put: Callable[[bytes], str], session_id: str,
                  dead_letter: Callable[[str, str], None], *, proxy_port: int = 8888,
@@ -35,15 +48,7 @@ class EgressSensor:
         self.degraded = False
 
     def _to_event(self, rec: dict) -> SecurityEvent:
-        payload_ref = None
-        body_b64 = rec.get("body_b64")
-        if body_b64:
-            payload_ref = self._blob_put(base64.b64decode(body_b64))
-        return new_event(event_type="network_upload", session_id=self._session, source="egress",
-                         ts=float(rec.get("ts", 0.0)), payload_ref=payload_ref,
-                         attrs={"destination": rec.get("host"), "method": rec.get("method"),
-                                "path": rec.get("path"), "size": rec.get("size"),
-                                "truncated": bool(rec.get("truncated", False))})
+        return egress_event_from_record(rec, self._session, self._blob_put)
 
     def _start_proxy(self) -> None:
         if _port_in_use(self._port):
