@@ -34,7 +34,7 @@ class EventStore:
 
     def append(self, event: SecurityEvent) -> None:
         self._conn.execute(
-            "INSERT INTO events (event_id, ts, processed, json) VALUES (?, ?, 0, ?)",
+            "INSERT OR IGNORE INTO events (event_id, ts, processed, json) VALUES (?, ?, 0, ?)",
             (event.event_id, event.ts, event.model_dump_json()),
         )
         self._conn.commit()
