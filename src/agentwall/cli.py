@@ -70,5 +70,19 @@ def run(workspace: Path = typer.Option(...), session: str = typer.Option(...),
     asyncio.run(_serve())
 
 
+@app.command("eval")
+def run_eval_cmd(json_out: bool = typer.Option(False, "--json")) -> None:
+    import asyncio
+    from agentwall.eval.reporter import run_eval, has_regression
+    scores, report = asyncio.run(run_eval())
+    if json_out:
+        import json
+        typer.echo(json.dumps([s.model_dump() for s in scores], indent=2))
+    else:
+        typer.echo(report)
+    if has_regression(scores):
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()
