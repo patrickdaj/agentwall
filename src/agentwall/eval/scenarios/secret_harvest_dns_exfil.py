@@ -14,7 +14,7 @@ SCENARIO = Scenario(
     family="secret-harvest-egress",
     provenance=Provenance(
         source="https://nvd.nist.gov/vuln/detail/CVE-2025-55284",
-        kind="incident", date="2025-06-23",
+        kind="incident", date="2025-08-15",
         note="Confirmed by Embrace The Red write-up (independent repro) and Wiz/"
              "SentinelOne advisories. Defanged: canary .env content, no live DNS "
              "call made — see status note on why the exfil step isn't modeled as "
